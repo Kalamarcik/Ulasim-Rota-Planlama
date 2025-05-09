@@ -1,0 +1,356 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>🗺 İzmit Rota Planlayıcı</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/leaflet.css" />
+    <style>
+        .form-section {
+            margin-bottom: 20px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 5px;
+            background-color: #f9f9f9;
+        }
+
+        .payment-methods {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+        }
+
+        .payment-method {
+            display: none;
+            margin-top: 10px;
+        }
+
+        .payment-method.active {
+            display: block;
+        }
+
+        .badge {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            color: white;
+            margin-left: 5px;
+        }
+
+        .badge-student {
+            background-color: #4caf50;
+        }
+
+        .badge-teacher {
+            background-color: #2196f3;
+        }
+
+        .badge-senior {
+            background-color: #9c27b0;
+        }
+    </style>
+</head>
+<body>
+
+    <h1>🗺 İzmit Rota Planlayıcı</h1>
+
+    <form id="routeForm">
+        <div class="form-section">
+            <h3>📍 Rota Bilgileri</h3>
+            <label>Başlangıç Durağı:</label>
+            <select id="start" required>
+                <option value="">Haritadan Seç</option>
+            </select>
+
+            <label>Hedef Durağı:</label>
+            <select id="end" required>
+                <option value="">Durak Seç</option>
+            </select>
+
+            <p>📌 <strong>Haritaya tıklayarak en yakın durağı otomatik seçebilirsiniz!</strong></p>
+        </div>
+
+        <div class="form-section">
+            <h3>👤 Yolcu Bilgileri</h3>
+            <label>Yolcu Tipi:</label>
+            <select id="passenger-type">
+                <option value="general">Genel Yolcu</option>
+                <option value="student">Öğrenci</option>
+                <option value="teacher">Öğretmen</option>
+                <option value="senior">65+ Yaş</option>
+            </select>
+
+            <div id="passenger-info">
+                <label>İsim:</label>
+                <input type="text" id="passenger-name" placeholder="İsim (İsteğe bağlı)">
+
+                <label>Yaş:</label>
+                <input type="number" id="passenger-age" min="1" max="120" value="30">
+            </div>
+        </div>
+
+        <div class="form-section">
+            <h3>💰 Ödeme Bilgileri</h3>
+            <div class="payment-methods">
+                <div>
+                    <input type="checkbox" id="payment-cash" name="payment-methods" value="cash">
+                    <label for="payment-cash">Nakit</label>
+                    <div class="payment-method" id="cash-details">
+                        <label>Nakit Miktarı (TL):</label>
+                        <input type="number" id="cash-amount" min="0" step="0.01" value="100">
+                    </div>
+                </div>
+
+                <div>
+                    <input type="checkbox" id="payment-credit" name="payment-methods" value="credit_card">
+                    <label for="payment-credit">Kredi Kartı</label>
+                    <div class="payment-method" id="credit-details">
+                        <label>Limit (TL):</label>
+                        <input type="number" id="credit-limit" min="0" step="0.01" value="1000">
+                    </div>
+                </div>
+
+                <div>
+                    <input type="checkbox" id="payment-kentcard" name="payment-methods" value="kent_card">
+                    <label for="payment-kentcard">KentKart</label>
+                    <div class="payment-method" id="kentcard-details">
+                        <label>KentKart Bakiyesi (TL):</label>
+                        <input type="number" id="kentcard-balance" min="0" step="0.01" value="50">
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <button type="submit">Rota Bul</button>
+        <button id="resetSelection" type="button">Başlangıç ve Varış Noktasını Sıfırla</button>
+    </form>
+
+    <div id="map"></div>
+
+    <div id="routes-container">
+        <div id="nearest-stop-info" class="route-panel"></div>
+        <div id="selected-route-details" class="route-panel"></div>
+        <div id="alternative-routes" class="route-panel">
+            <h3>🛤 Alternatif Rotalar</h3>
+            <div id="alt-routes-list"></div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.7.1/leaflet.js"></script>
+    <script src="{{ url_for('static', filename='script.js') }}"></script>
+    <script>
+        document.querySelectorAll('input[name="payment-methods"]').forEach(input => {
+            input.addEventListener('change', function() {
+                const detailsId = this.value === 'cash' ? 'cash-details' :
+                                 this.value === 'credit_card' ? 'credit-details' : 'kentcard-details';
+                document.getElementById(detailsId).classList.toggle('active', this.checked);
+            });
+        });
+
+        // Update the route form submit handler to include passenger and payment data
+        document.getElementById("routeForm").addEventListener("submit", function(event) {
+            event.preventDefault();
+
+            let startSelect = document.getElementById("start");
+            let endSelect = document.getElementById("end");
+
+            let startId = startSelect.value;
+            let endId = endSelect.value;
+
+            if (!startId || !endId) {
+                alert("Lütfen başlangıç ve hedef durağını seçin.");
+                return;
+            }
+
+            const passengerType = document.getElementById("passenger-type").value;
+            const passengerName = document.getElementById("passenger-name").value || "Anonim";
+            const passengerAge = parseInt(document.getElementById("passenger-age").value) || 30;
+
+            const paymentMethods = [];
+            const paymentInputs = document.querySelectorAll('input[name="payment-methods"]:checked');
+            paymentInputs.forEach(input => {
+                paymentMethods.push(input.value);
+            });
+
+            const cashAmount = parseFloat(document.getElementById("cash-amount").value) || 0;
+            const creditLimit = parseFloat(document.getElementById("credit-limit").value) || 0;
+            const kentCardBalance = parseFloat(document.getElementById("kentcard-balance").value) || 0;
+
+            document.getElementById("selected-route-details").innerHTML = '<h3>⏳ Rota hesaplanıyor...</h3>';
+            document.getElementById("alt-routes-list").innerHTML = '';
+
+            const requestBody = {
+                start: startId,
+                end: endId,
+                passenger_type: passengerType,
+                passenger_name: passengerName,
+                passenger_age: passengerAge,
+                payment_methods: paymentMethods,
+                cash_amount: cashAmount,
+                credit_limit: creditLimit,
+                kent_card_balance: kentCardBalance
+            };
+
+            console.log("📝 Rota isteği:", requestBody);
+
+            fetch("/get_routes", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(requestBody)
+            })
+            .then(response => response.json())
+            .then(data => {
+                console.log("🚀 API Yanıtı:", data);
+
+                if (!data.route) {
+                    console.error("🚨 API'den geçerli rota verisi gelmedi!", data);
+                    document.getElementById("selected-route-details").innerHTML = `
+                        <div class="info-block" style="background-color: #ffe5e5; border-left: 4px solid #ff3b30;">
+                            ⚠️ Rota bulunamadı! Lütfen farklı duraklar seçin.
+                        </div>`;
+                    return;
+                }
+
+                currentRouteDetails = data;
+                updateMap(data);
+                displayRouteDetails(data);
+
+                fetch("/get_alternative_routes", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(requestBody)
+                })
+                .then(res => res.json())
+                .then(alternatives => {
+                    console.log("🔁 Alternatif Rotalar:", alternatives);
+                    displayAlternativeRoutes(alternatives);
+                })
+                .catch(error => {
+                    console.error("⚠️ Alternatif rotalar alınırken hata:", error);
+                    document.getElementById("alt-routes-list").innerHTML = `
+                        <div class="info-block" style="background-color: #fff3cd; border-left: 4px solid #ffcc00;">
+                            ⚠️ Alternatif rotalar alınamadı.
+                        </div>`;
+                });
+            })
+            .catch(error => {
+                console.error("🚨 Rota verisi alınırken hata oluştu:", error);
+                document.getElementById("selected-route-details").innerHTML = `
+                    <div class="info-block" style="background-color: #ffe5e5; border-left: 4px solid #ff3b30;">
+                        ⚠️ Rota hesaplanırken bir hata oluştu!
+                    </div>`;
+            });
+        });
+
+        function displayRouteDetailsFromData(details, container) {
+            const passengerType = document.getElementById("passenger-type").value;
+            let discountBadge = '';
+
+            if (passengerType === 'student') {
+                discountBadge = '<span class="badge badge-student">%50 İndirimli</span>';
+            } else if (passengerType === 'teacher') {
+                discountBadge = '<span class="badge badge-teacher">%25 İndirimli</span>';
+            } else if (passengerType === 'senior') {
+                discountBadge = '<span class="badge badge-senior">%100 İndirimli (20 biniş limiti)</span>';
+            }
+
+            let html = `
+                <h3>🚏 Rota Detayları ${discountBadge}</h3>
+                <div class="route-steps">
+            `;
+
+            if (walkingToStart) {
+                const icon = walkingToStart.taxi_required ? '🚖' : '🚶';
+                const method = walkingToStart.taxi_required ? 'Taksi' : 'Yürüyerek';
+                const costText = walkingToStart.taxi_required ? ` | 💰 Ücret: ${walkingToStart.cost.toFixed(2)} TL` : '';
+                const timeText = walkingToStart.taxi_required ? ` | ⏳ Süre: ${walkingToStart.time.toFixed(2)} dk` : '';
+                html += `
+                    <div class="route-stop ${walkingToStart.taxi_required ? 'route-type-taxi' : 'route-type-walk'}">
+                        <div class="transport-icon">${icon}</div>
+                        <div>
+                            <strong>🏠 Başlangıç Konumu → ${walkingToStart.name}</strong>
+                            <div class="route-step-details">
+                                📏 Mesafe: ${(walkingToStart.distance / 1000).toFixed(2)} km (${method})${costText}${timeText}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            details.steps.forEach((step, index) => {
+                const icon = getTransportIcon(step.transportType);
+                const badge = getTransportBadge(step.transportType);
+
+                html += `
+                    <div class="route-stop ${getRouteTypeClass(step.transportType)}">
+                        <div class="transport-icon">${icon}</div>
+                        <div>
+                            <strong>${index + 1}. ${step.fromName} → ${step.toName}</strong> ${badge}
+                            <div class="route-step-details">
+                                ⏳ Süre: ${step.time} dk | 💰 Ücret: ${step.cost.toFixed(2)} TL | 📏 Mesafe: ${step.distance.toFixed(1)} km
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                if (index < details.steps.length - 1 && details.steps[index + 1].transportType === "transfer") {
+                    html += `<div class="transfer-line">Aktarma Noktası</div>`;
+                }
+            });
+
+            if (walkingToEnd) {
+                const icon = walkingToEnd.taxi_required ? '🚖' : '🚶';
+                const method = walkingToEnd.taxi_required ? 'Taksi' : 'Yürüyerek';
+                const costText = walkingToEnd.taxi_required ? ` | 💰 Ücret: ${walkingToEnd.cost.toFixed(2)} TL` : '';
+                const timeText = walkingToEnd.taxi_required ? ` | ⏳ Süre: ${walkingToEnd.time.toFixed(2)} dk` : '';
+                html += `
+                    <div class="route-stop ${walkingToEnd.taxi_required ? 'route-type-taxi' : 'route-type-walk'}">
+                        <div class="transport-icon">${icon}</div>
+                        <div>
+                            <strong>${walkingToEnd.name} → 🏁 Varış Konumu</strong>
+                            <div class="route-step-details">
+                                📏 Mesafe: ${(walkingToEnd.distance / 1000).toFixed(2)} km (${method})${costText}${timeText}
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            html += `</div>`;
+
+            // Add payment method information
+            const selectedPayments = Array.from(document.querySelectorAll('input[name="payment-methods"]:checked'))
+                .map(input => input.value === 'cash' ? 'Nakit' : input.value === 'credit_card' ? 'Kredi Kartı' : 'KentKart')
+                .join(', ');
+
+            html += `
+                <div class="route-summary">
+                    <div>
+                        <strong>💰 Toplam Ücret</strong>
+                        <div>${details.totalCost.toFixed(2)} TL</div>
+                    </div>
+                    <div>
+                        <strong>⏳ Toplam Süre</strong>
+                        <div>${details.totalTime} dk</div>
+                    </div>
+                    <div>
+                        <strong>📏 Toplam Mesafe</strong>
+                        <div>${details.totalDistance.toFixed(1)} km</div>
+                    </div>
+                    <div>
+                        <strong>🔄 Aktarma Sayısı</strong>
+                        <div>${details.totalTransfers}</div>
+                    </div>
+                </div>
+                <div class="payment-info">
+                    <strong>💳 Ödeme Yöntemi:</strong> ${selectedPayments || 'Belirtilmedi'}
+                </div>
+            `;
+
+            container.innerHTML = html;
+        }
+    </script>
+</body>
+</html>
